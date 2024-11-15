@@ -12,6 +12,9 @@ const generateMermaidDiagram = (
   });
 
   transitions.forEach((transition) => {
+    if (["+", "-", "*", "/"].includes(transition.symbol)) {
+      transition.symbol = `\\${transition.symbol}`;
+    }
     diagram += `  S${transition.from} --> S${transition.to}: ${transition.symbol}\n`;
   });
 
