@@ -195,6 +195,12 @@ class SLRParser {
   }
 
   private computeStates(): void {
+    // add state S' -> S
+    this.grammar.unshift({
+      head: this.grammar[0].head + "'",
+      body: [this.grammar[0].head],
+    });
+
     const startState = this.closure([
       `${this.grammar[0].head} -> . ${this.grammar[0].body.join(" ")}`,
     ]);
