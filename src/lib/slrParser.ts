@@ -6,9 +6,131 @@ class SLRParser {
   private transitions: ITransition[] = [];
   private actionTable: { [key: string]: string } = {};
   private gotoTable: { [key: string]: string } = {};
+  private firstSets: { [key: string]: Set<string> } = {};
+  private followSets: { [key: string]: Set<string> } = {};
 
   constructor(grammar: IGrammarRule[]) {
     this.grammar = grammar;
+    this.computeFirstSets();
+    this.computeFollowSets();
+  }
+
+  private isTerminal(symbol: string): boolean {
+    return !/^[A-Z]$/.test(symbol);
+  }
+
+  private isNonTerminal(symbol: string): boolean {
+    return /^[A-Z]$/.test(symbol);
+  }
+
+  private computeFirstSets(): void {
+    for (let rule of this.grammar) {
+      this.firstSets[rule.head] = new Set<string>();
+    }
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let rule of this.grammar) {
+        const head = rule.head;
+        const body = rule.body;
+
+        if (body.length === 0) {
+          if (!this.firstSets[head].has("ε")) {
+            this.firstSets[head].add("ε");
+            changed = true;
+          }
+          continue;
+        }
+
+        const firstSymbol = body[0];
+        if (this.isTerminal(firstSymbol)) {
+          if (!this.firstSets[head].has(firstSymbol)) {
+            this.firstSets[head].add(firstSymbol);
+            changed = true;
+          }
+        } else {
+          for (let symbol of body) {
+            const symbolFirst = this.firstSets[symbol] || new Set<string>();
+            for (let terminal of symbolFirst) {
+              if (terminal !== "ε" && !this.firstSets[head].has(terminal)) {
+                this.firstSets[head].add(terminal);
+                changed = true;
+              }
+            }
+            if (!symbolFirst.has("ε")) break;
+          }
+        }
+      }
+    }
+  }
+
+  private computeFollowSets(): void {
+    for (let rule of this.grammar) {
+      this.followSets[rule.head] = new Set<string>();
+    }
+
+    this.followSets[this.grammar[0].head].add("$");
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let rule of this.grammar) {
+        const head = rule.head;
+        const body = rule.body;
+
+        for (let i = 0; i < body.length; i++) {
+          const currentSymbol = body[i];
+          if (this.isNonTerminal(currentSymbol)) {
+            const remaining = body.slice(i + 1);
+            let addFollowOfHead = false;
+
+            if (remaining.length === 0) {
+              addFollowOfHead = true;
+            } else {
+              let allCanBeEmpty = true;
+              for (let symbol of remaining) {
+                if (this.isTerminal(symbol)) {
+                  if (!this.followSets[currentSymbol].has(symbol)) {
+                    this.followSets[currentSymbol].add(symbol);
+                    changed = true;
+                  }
+                  allCanBeEmpty = false;
+                  break;
+                } else {
+                  const firstSet = this.firstSets[symbol];
+                  for (let terminal of firstSet) {
+                    if (
+                      terminal !== "ε" &&
+                      !this.followSets[currentSymbol].has(terminal)
+                    ) {
+                      this.followSets[currentSymbol].add(terminal);
+                      changed = true;
+                    }
+                  }
+                  if (!firstSet.has("ε")) {
+                    allCanBeEmpty = false;
+                    break;
+                  }
+                }
+              }
+              if (allCanBeEmpty) {
+                addFollowOfHead = true;
+              }
+            }
+
+            if (addFollowOfHead) {
+              for (let terminal of this.followSets[head]) {
+                if (!this.followSets[currentSymbol].has(terminal)) {
+                  this.followSets[currentSymbol].add(terminal);
+                  changed = true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   private closure(items: string[]): string[] {
@@ -40,7 +162,7 @@ class SLRParser {
   }
 
   private goto(items: string[], symbol: string): string[] {
-    let movedItems: string[] = [];
+    let movedItems = [];
     for (let item of items) {
       const [head, dotBody] = item.split(" -> ");
       const bodyParts = dotBody.split(" ");
@@ -59,6 +181,19 @@ class SLRParser {
     return this.closure(movedItems);
   }
 
+  private getAllTerminals(): Set<string> {
+    const terminals = new Set<string>();
+    for (let rule of this.grammar) {
+      rule.body.forEach((symbol) => {
+        if (this.isTerminal(symbol)) {
+          terminals.add(symbol);
+        }
+      });
+    }
+    terminals.add("$");
+    return terminals;
+  }
+
   private computeStates(): void {
     const startState = this.closure([
       `${this.grammar[0].head} -> . ${this.grammar[0].body.join(" ")}`,
@@ -67,7 +202,7 @@ class SLRParser {
     let i = 0;
 
     while (i < this.states.length) {
-      const symbols = new Set<string>();
+      const symbols: Set<string> = new Set();
       for (let item of this.states[i]) {
         const [_, dotBody] = item.split(" -> ");
         const bodyParts = dotBody.split(" ");
@@ -90,7 +225,7 @@ class SLRParser {
           }
           this.transitions.push({ from: i, to: existingIndex, symbol });
 
-          if (/^[A-Z]$/.test(symbol)) {
+          if (this.isNonTerminal(symbol)) {
             this.gotoTable[`I${i},${symbol}`] = `I${existingIndex}`;
           } else {
             this.actionTable[`I${i},${symbol}`] = `S${existingIndex}`;
@@ -101,30 +236,23 @@ class SLRParser {
       for (let item of this.states[i]) {
         if (item.endsWith(".")) {
           const [head, body] = item.slice(0, -1).split(" -> ");
-          if (head === this.grammar[0].head) {
+          if (
+            head === this.grammar[0].head &&
+            body.trim() === this.grammar[0].body.join(" ")
+          ) {
             this.actionTable[`I${i},$`] = "Accept";
           } else {
-            this.grammar.forEach((rule, index) => {
-              if (rule.head === head && rule.body.join(" ") === body.trim()) {
-                this.actionTable[`I${i},$`] = `R${index}`;
+            const ruleIndex = this.grammar.findIndex(
+              (rule) =>
+                rule.head === head && rule.body.join(" ") === body.trim()
+            );
+            if (ruleIndex !== -1) {
+              const followSet = this.followSets[head];
+              for (let terminal of followSet) {
+                this.actionTable[`I${i},${terminal}`] = `R${ruleIndex}`;
               }
-            });
-          }
-        }
-      }
-
-      for (let item of this.states[i]) {
-        if (item.endsWith(".")) {
-          const [head, body] = item.slice(0, -1).split(" -> ");
-          this.grammar.forEach((rule, index) => {
-            if (rule.head === head && rule.body.join(" ") === body.trim()) {
-              this.grammar[0].body.forEach((symbol) => {
-                if (!this.actionTable[`I${i},${symbol}`]) {
-                  this.actionTable[`I${i},${symbol}`] = `R${index}`;
-                }
-              });
             }
-          });
+          }
         }
       }
 
@@ -133,12 +261,7 @@ class SLRParser {
   }
 
   private getActionTableJson(): object[] {
-    const symbols = new Set<string>();
-    for (let rule of this.grammar) {
-      rule.body.forEach((symbol) => symbols.add(symbol));
-    }
-    symbols.add("$");
-
+    const symbols = this.getAllTerminals();
     const table: object[] = [];
 
     for (let i = 0; i < this.states.length; i++) {
